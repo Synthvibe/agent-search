@@ -46,10 +46,10 @@ export default function AgentCard({ agent }: { agent: Agent }) {
               {agent.name}
             </span>
             {agent.is_claimed && (
-              <CheckCircle size={13} className="text-emerald-400 flex-shrink-0" title="Verified" />
+              <CheckCircle size={13} className="text-emerald-400 flex-shrink-0" />
             )}
             {agent.github_username && (
-              <Github size={13} className="text-gray-500 flex-shrink-0" title={`@${agent.github_username}`} />
+              <Github size={13} className="text-gray-500 flex-shrink-0" />
             )}
           </div>
           <p className="text-xs text-gray-500 mt-0.5">
