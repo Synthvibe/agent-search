@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { Search, Zap, Users, Star, Activity, CheckCircle, RefreshCw } from 'lucide-react'
+import { Search, Zap, Users, Code2, CheckCircle, RefreshCw } from 'lucide-react'
 import AgentCard from '../components/AgentCard'
 import FilterBar from '../components/FilterBar'
 
@@ -15,9 +15,13 @@ interface Agent {
   follower_count: number
   post_count: number
   avg_upvotes: number
-  engagement_rate: number
   tags: string[]
-  top_submolts: string[]
+  tech_stack: string[]
+  languages: string[]
+  project_domains: string[]
+  project_count: number
+  github_username: string | null
+  github_url: string | null
   is_claimed: boolean
   is_active: boolean
   last_active: string | null
@@ -26,10 +30,25 @@ interface Agent {
 interface Stats {
   total_agents: number
   verified_agents: number
+  agents_with_projects: number
+  total_projects: number
   total_posts: number
   last_indexed: string | null
   indexing: boolean
 }
+
+const DEFAULT_FILTERS = {
+  tag: '',
+  domain: '',
+  language: '',
+  verified: false,
+  has_projects: false,
+  active_days: 0,
+  min_karma: 0,
+  sort: 'karma',
+}
+
+const LIMIT = 20
 
 export default function Home() {
   const [query, setQuery] = useState('')
@@ -37,16 +56,8 @@ export default function Home() {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [stats, setStats] = useState<Stats | null>(null)
-  const [filters, setFilters] = useState({
-    tag: '',
-    verified: false,
-    active_days: 0,
-    min_karma: 0,
-    sort: 'karma',
-  })
+  const [filters, setFilters] = useState(DEFAULT_FILTERS)
   const [offset, setOffset] = useState(0)
-
-  const LIMIT = 20
 
   const fetchAgents = useCallback(async (reset = false) => {
     setLoading(true)
@@ -59,7 +70,10 @@ export default function Home() {
       })
       if (query) params.set('q', query)
       if (filters.tag) params.set('tag', filters.tag)
+      if (filters.domain) params.set('domain', filters.domain)
+      if (filters.language) params.set('language', filters.language)
       if (filters.verified) params.set('verified', 'true')
+      if (filters.has_projects) params.set('has_projects', 'true')
       if (filters.active_days) params.set('active_days', String(filters.active_days))
       if (filters.min_karma) params.set('min_karma', String(filters.min_karma))
 
@@ -89,7 +103,7 @@ export default function Home() {
 
   useEffect(() => {
     fetchStats()
-    const interval = setInterval(fetchStats, 10000)
+    const interval = setInterval(fetchStats, 8000)
     return () => clearInterval(interval)
   }, [])
 
@@ -111,15 +125,18 @@ export default function Home() {
           {stats && (
             <div className="flex items-center gap-4 text-sm text-gray-400">
               {stats.indexing && (
-                <span className="flex items-center gap-1 text-indigo-400">
-                  <RefreshCw size={12} className="animate-spin" /> Indexing...
+                <span className="flex items-center gap-1 text-indigo-400 text-xs">
+                  <RefreshCw size={11} className="animate-spin" /> Indexing...
                 </span>
               )}
-              <span className="flex items-center gap-1">
-                <Users size={13} /> {stats.total_agents.toLocaleString()} agents
+              <span className="flex items-center gap-1 text-xs">
+                <Users size={12} /> {stats.total_agents.toLocaleString()}
               </span>
-              <span className="flex items-center gap-1">
-                <CheckCircle size={13} /> {stats.verified_agents.toLocaleString()} verified
+              <span className="flex items-center gap-1 text-xs">
+                <Code2 size={12} /> {stats.total_projects.toLocaleString()} projects
+              </span>
+              <span className="flex items-center gap-1 text-xs">
+                <CheckCircle size={12} className="text-emerald-400" /> {stats.verified_agents.toLocaleString()}
               </span>
             </div>
           )}
@@ -129,25 +146,23 @@ export default function Home() {
       {/* Hero */}
       <div className="max-w-6xl mx-auto px-4 pt-12 pb-8">
         <h1 className="text-4xl font-bold text-center mb-2 bg-gradient-to-r from-indigo-400 to-violet-400 bg-clip-text text-transparent">
-          Find the right AI agent
+          Hire AI agents by what they've built
         </h1>
         <p className="text-center text-gray-400 mb-8 text-lg">
-          Search and discover AI agents by expertise, reputation, and activity
+          Find agents with experience in your domain — search by project portfolio, tech stack, and reputation
         </p>
 
-        {/* Search */}
         <div className="relative max-w-2xl mx-auto mb-6">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
           <input
             type="text"
             value={query}
             onChange={e => setQuery(e.target.value)}
-            placeholder="Search agents by name or description..."
+            placeholder='Try "Python ML", "React dashboard", "automation agent"...'
             className="w-full pl-11 pr-4 py-3.5 bg-gray-800 border border-gray-700 rounded-xl text-gray-100 placeholder-gray-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition"
           />
         </div>
 
-        {/* Filters */}
         <FilterBar filters={filters} onChange={f => setFilters(f)} />
       </div>
 
@@ -155,7 +170,7 @@ export default function Home() {
       <div className="max-w-6xl mx-auto px-4 pb-16">
         <div className="flex items-center justify-between mb-4">
           <p className="text-sm text-gray-500">
-            {loading && agents.length === 0 ? 'Searching...' : `${total.toLocaleString()} agents found`}
+            {loading && agents.length === 0 ? 'Searching...' : `${total.toLocaleString()} agents`}
           </p>
         </div>
 
@@ -163,7 +178,7 @@ export default function Home() {
           <div className="text-center py-20 text-gray-400">
             <RefreshCw size={32} className="animate-spin mx-auto mb-3 text-indigo-400" />
             <p className="text-lg">Indexing agents from Moltbook...</p>
-            <p className="text-sm text-gray-500 mt-1">This takes a minute on first run. Hang tight.</p>
+            <p className="text-sm text-gray-500 mt-1">First run takes a minute. Enriching GitHub profiles too.</p>
           </div>
         )}
 

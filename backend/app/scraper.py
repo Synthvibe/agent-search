@@ -8,28 +8,23 @@ logger = logging.getLogger(__name__)
 
 MOLTBOOK_BASE = "https://www.moltbook.com/api/v1"
 
-# Keyword-based domain tagging
 DOMAIN_TAGS = {
-    "coding": ["code", "python", "javascript", "typescript", "rust", "golang", "api", "github", "deploy", "docker", "backend", "frontend", "database", "sql", "programming", "dev", "software", "function", "class", "bug", "debug"],
-    "research": ["research", "paper", "study", "analysis", "data", "science", "experiment", "hypothesis", "findings", "literature", "arxiv", "academic"],
-    "writing": ["writing", "blog", "article", "post", "essay", "draft", "edit", "content", "story", "narrative", "prose"],
-    "automation": ["automation", "workflow", "cron", "schedule", "pipeline", "script", "task", "job", "trigger", "hook", "orchestrat"],
+    "coding": ["code", "python", "javascript", "typescript", "rust", "golang", "api", "github", "deploy", "docker", "backend", "frontend", "database", "sql", "programming", "dev", "software"],
+    "research": ["research", "paper", "study", "analysis", "data", "science", "experiment", "hypothesis", "findings", "arxiv", "academic"],
+    "writing": ["writing", "blog", "article", "post", "essay", "draft", "edit", "content", "story", "narrative"],
+    "automation": ["automation", "workflow", "cron", "schedule", "pipeline", "script", "task", "job", "trigger", "orchestrat"],
     "memory": ["memory", "context", "remember", "recall", "store", "retriev", "embed", "vector", "rag", "knowledge"],
-    "social": ["social", "community", "engage", "follow", "comment", "upvote", "moltbook", "post", "share", "interact"],
+    "social": ["social", "community", "engage", "follow", "comment", "upvote", "moltbook", "share", "interact"],
     "finance": ["finance", "trading", "market", "stock", "crypto", "investment", "portfolio", "price", "economic"],
     "productivity": ["productivity", "calendar", "email", "meeting", "schedule", "organiz", "plan", "task manager"],
     "creative": ["creative", "art", "music", "design", "generate", "imagine", "visual", "image", "draw", "compose"],
-    "reasoning": ["reasoning", "logic", "think", "argue", "debate", "philosophy", "ethics", "decision", "judge"],
+    "reasoning": ["reasoning", "logic", "think", "argue", "debate", "philosophy", "ethics", "decision"],
 }
 
 
 def extract_tags(text: str) -> list[str]:
     text_lower = text.lower()
-    tags = []
-    for tag, keywords in DOMAIN_TAGS.items():
-        if any(kw in text_lower for kw in keywords):
-            tags.append(tag)
-    return tags
+    return [tag for tag, keywords in DOMAIN_TAGS.items() if any(kw in text_lower for kw in keywords)]
 
 
 def parse_datetime(dt_str: Optional[str]) -> Optional[datetime]:
@@ -50,9 +45,12 @@ async def fetch_posts_page(client: httpx.AsyncClient, cursor: Optional[str] = No
     return resp.json()
 
 
-async def scrape_all_agents(max_posts: int = 2000) -> dict:
+async def scrape_all_agents(max_posts: int = 2000, enrich_github: bool = True) -> dict:
     """Scrape posts from Moltbook, extract unique agents with stats."""
+    from .github_enricher import enrich_agent
+
     agents = {}
+    agent_post_texts = {}  # agent_id -> all post text for enrichment
     posts_data = []
     cursor = None
     fetched = 0
@@ -75,7 +73,8 @@ async def scrape_all_agents(max_posts: int = 2000) -> dict:
                 if not agent_id:
                     continue
 
-                # Track post data
+                post_text = f"{post.get('title', '')} {post.get('content', '')}"
+
                 post_record = {
                     "id": post["id"],
                     "agent_id": agent_id,
@@ -90,7 +89,6 @@ async def scrape_all_agents(max_posts: int = 2000) -> dict:
                 }
                 posts_data.append(post_record)
 
-                # Aggregate agent data
                 if agent_id not in agents:
                     agents[agent_id] = {
                         "id": agent_id,
@@ -107,12 +105,19 @@ async def scrape_all_agents(max_posts: int = 2000) -> dict:
                         "post_count": 0,
                         "total_upvotes": 0,
                         "submolts": {},
-                        "all_text": author.get("description", "") or "",
+                        # will be set by enricher
+                        "github_username": None,
+                        "github_url": None,
+                        "project_count": 0,
+                        "languages": [],
+                        "tech_stack": [],
+                        "project_domains": [],
                     }
+                    agent_post_texts[agent_id] = ""
 
                 agents[agent_id]["post_count"] += 1
                 agents[agent_id]["total_upvotes"] += post.get("upvotes", 0)
-                agents[agent_id]["all_text"] += " " + post.get("title", "") + " " + post.get("content", "")
+                agent_post_texts[agent_id] += " " + post_text
 
                 submolt = post.get("submolt", {}).get("name", "")
                 if submolt:
@@ -124,25 +129,40 @@ async def scrape_all_agents(max_posts: int = 2000) -> dict:
                 break
 
             logger.info(f"Fetched {fetched} posts, {len(agents)} unique agents so far...")
-            await asyncio.sleep(0.5)  # be polite
+            await asyncio.sleep(0.3)
 
-    # Compute derived stats
+    # Compute base stats
     for agent in agents.values():
         pc = agent["post_count"]
         agent["avg_upvotes"] = agent["total_upvotes"] / pc if pc > 0 else 0
         agent["engagement_rate"] = agent["avg_upvotes"]
-        agent["tags"] = list(set(extract_tags(agent["all_text"])))
         agent["top_submolts"] = sorted(agent["submolts"].items(), key=lambda x: x[1], reverse=True)[:5]
         agent["top_submolts"] = [s[0] for s in agent["top_submolts"]]
+
+        all_text = agent.get("description", "") + " " + agent_post_texts.get(agent["id"], "")
+        agent["tags"] = list(set(extract_tags(all_text)))
         del agent["submolts"]
-        del agent["all_text"]
 
-    logger.info(f"Scraped {fetched} posts, found {len(agents)} unique agents")
-    return {"agents": list(agents.values()), "posts": posts_data}
+    all_projects = []
 
+    # GitHub enrichment (rate-limited)
+    if enrich_github:
+        logger.info(f"Enriching {len(agents)} agents with GitHub data...")
+        for i, (agent_id, agent) in enumerate(agents.items()):
+            try:
+                enriched, projects = await enrich_agent(agent, agent_post_texts.get(agent_id, ""))
+                agents[agent_id] = enriched
+                all_projects.extend(projects)
+            except Exception as e:
+                logger.warning(f"Enrichment failed for {agent_id}: {e}")
 
-async def fetch_submolts() -> list:
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(f"{MOLTBOOK_BASE}/submolts", timeout=15)
-        resp.raise_for_status()
-        return resp.json().get("submolts", [])
+            if i > 0 and i % 10 == 0:
+                logger.info(f"Enriched {i}/{len(agents)} agents...")
+                await asyncio.sleep(1)  # respect GitHub rate limits
+
+    logger.info(f"Done. {fetched} posts, {len(agents)} agents, {len(all_projects)} projects")
+    return {
+        "agents": list(agents.values()),
+        "posts": posts_data,
+        "projects": all_projects,
+    }

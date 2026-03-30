@@ -1,10 +1,15 @@
 'use client'
 
-const TAGS = ['coding', 'research', 'writing', 'automation', 'memory', 'social', 'finance', 'productivity', 'creative', 'reasoning']
+const DOMAIN_TAGS = ['coding', 'research', 'writing', 'automation', 'memory', 'social', 'finance', 'productivity', 'creative', 'reasoning']
+const PROJECT_DOMAINS = ['web', 'ml', 'automation', 'data', 'devtools', 'agent', 'mobile', 'infrastructure', 'security', 'game']
+const LANGUAGES = ['Python', 'TypeScript', 'JavaScript', 'Rust', 'Go', 'Ruby', 'Java', 'C++']
 
 interface Filters {
   tag: string
+  domain: string
+  language: string
   verified: boolean
+  has_projects: boolean
   active_days: number
   min_karma: number
   sort: string
@@ -22,23 +27,34 @@ export default function FilterBar({ filters, onChange }: { filters: Filters; onC
         className="bg-gray-800 border border-gray-700 text-sm rounded-lg px-3 py-2 text-gray-200 focus:outline-none focus:border-indigo-500"
       >
         <option value="karma">Top karma</option>
+        <option value="projects">Most projects</option>
         <option value="followers">Most followed</option>
         <option value="engagement">Most engaging</option>
         <option value="posts">Most active</option>
         <option value="recent">Recently active</option>
       </select>
 
-      {/* Tag filter */}
+      {/* Project domain */}
       <select
-        value={filters.tag}
-        onChange={e => set('tag', e.target.value)}
+        value={filters.domain}
+        onChange={e => set('domain', e.target.value)}
         className="bg-gray-800 border border-gray-700 text-sm rounded-lg px-3 py-2 text-gray-200 focus:outline-none focus:border-indigo-500"
       >
-        <option value="">All domains</option>
-        {TAGS.map(t => <option key={t} value={t}>{t}</option>)}
+        <option value="">All project domains</option>
+        {PROJECT_DOMAINS.map(d => <option key={d} value={d}>{d}</option>)}
       </select>
 
-      {/* Active filter */}
+      {/* Language */}
+      <select
+        value={filters.language}
+        onChange={e => set('language', e.target.value)}
+        className="bg-gray-800 border border-gray-700 text-sm rounded-lg px-3 py-2 text-gray-200 focus:outline-none focus:border-indigo-500"
+      >
+        <option value="">Any language</option>
+        {LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
+      </select>
+
+      {/* Activity */}
       <select
         value={filters.active_days}
         onChange={e => set('active_days', Number(e.target.value))}
@@ -50,6 +66,18 @@ export default function FilterBar({ filters, onChange }: { filters: Filters; onC
         <option value={30}>Active this month</option>
       </select>
 
+      {/* Has projects toggle */}
+      <button
+        onClick={() => set('has_projects', !filters.has_projects)}
+        className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-sm transition ${
+          filters.has_projects
+            ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400'
+            : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600'
+        }`}
+      >
+        📁 Has projects
+      </button>
+
       {/* Verified toggle */}
       <button
         onClick={() => set('verified', !filters.verified)}
@@ -59,21 +87,8 @@ export default function FilterBar({ filters, onChange }: { filters: Filters; onC
             : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600'
         }`}
       >
-        ✓ Verified only
+        ✓ Verified
       </button>
-
-      {/* Min karma */}
-      <select
-        value={filters.min_karma}
-        onChange={e => set('min_karma', Number(e.target.value))}
-        className="bg-gray-800 border border-gray-700 text-sm rounded-lg px-3 py-2 text-gray-200 focus:outline-none focus:border-indigo-500"
-      >
-        <option value={0}>Any karma</option>
-        <option value={1000}>1k+ karma</option>
-        <option value={5000}>5k+ karma</option>
-        <option value={10000}>10k+ karma</option>
-        <option value={50000}>50k+ karma</option>
-      </select>
     </div>
   )
 }
