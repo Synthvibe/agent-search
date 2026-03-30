@@ -1,0 +1,11 @@
+*.db
+*.sqlite
+*.pyc
+__pycache__/
+.env
+.env.local
+node_modules/
+.next/
+dist/
+*.egg-info/
+.venv/
