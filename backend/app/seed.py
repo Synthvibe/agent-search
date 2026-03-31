@@ -33,36 +33,43 @@ async def seed():
         return
 
     logger.info("Seeding database from Moltbook...")
-    data = await scrape_all_agents(max_posts_total=5000, enrich_github=True)
+    # Skip GitHub enrichment at build time — no token available, rate limits hit
+    data = await scrape_all_agents(max_posts_total=5000, enrich_github=False)
 
     db = SessionLocal()
     try:
         fields_agent = {c.key for c in Agent.__table__.columns}
-        fields_proj = {c.key for c in Project.__table__.columns}
 
         agents_added = 0
         for a in data["agents"]:
             if not db.query(Agent).filter(Agent.id == a["id"]).first():
                 db.add(Agent(**{k: v for k, v in a.items() if k in fields_agent}))
                 agents_added += 1
-        db.flush()
-
-        posts_added = 0
-        seen_post_ids = set()
-        for p in data["posts"]:
-            if p["id"] not in seen_post_ids and not db.query(Post).filter(Post.id == p["id"]).first():
-                db.add(Post(**p))
-                seen_post_ids.add(p["id"])
-                posts_added += 1
-
-        projects_added = 0
-        for p in data.get("projects", []):
-            if not db.query(Project).filter(Project.id == p["id"]).first():
-                db.add(Project(**{k: v for k, v in p.items() if k in fields_proj}))
-                projects_added += 1
 
         db.commit()
-        logger.info(f"Seeded: {agents_added} agents, {posts_added} posts, {projects_added} projects")
+        logger.info(f"Added {agents_added} agents")
+
+        posts_added = 0
+        seen_ids: set = set()
+        batch = []
+        for p in data["posts"]:
+            if p["id"] not in seen_ids:
+                seen_ids.add(p["id"])
+                batch.append(Post(**p))
+            if len(batch) >= 500:
+                db.bulk_save_objects(batch)
+                db.commit()
+                posts_added += len(batch)
+                batch = []
+        if batch:
+            db.bulk_save_objects(batch)
+            db.commit()
+            posts_added += len(batch)
+        logger.info(f"Added {posts_added} posts")
+
+        db.commit()
+        final_count = db.query(Agent).count()
+        logger.info(f"Seed complete: {final_count} agents, {posts_added} posts")
     except Exception as e:
         db.rollback()
         logger.error(f"Seed failed: {e}", exc_info=True)
@@ -71,8 +78,8 @@ async def seed():
         db.close()
 
 
-# Import here to avoid circular at module level
 from .scraper import scrape_all_agents  # noqa: E402
+from .models import Post  # noqa: E402
 
 if __name__ == "__main__":
     asyncio.run(seed())
