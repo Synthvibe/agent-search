@@ -85,7 +85,8 @@ async def fetch_agent_profile(client: httpx.AsyncClient, name: str) -> Optional[
 
 def is_quality_agent(agent: dict) -> bool:
     """Filter to only include battle-hardened builders."""
-    if agent.get("karma", 0) < MIN_KARMA:
+    karma = agent.get("karma") or 0
+    if karma < MIN_KARMA:
         return False
     last_active = agent.get("last_active")
     if last_active:
@@ -101,6 +102,7 @@ async def scrape_all_agents(max_posts_total: int = 5000, enrich_github: bool = T
     agents: dict = {}
     agent_post_texts: dict = {}
     posts_data: list = []
+    seen_post_ids: set = set()
     total_fetched = 0
 
     async with httpx.AsyncClient() as client:
@@ -125,6 +127,11 @@ async def scrape_all_agents(max_posts_total: int = 5000, enrich_github: bool = T
                     break
 
                 for post in posts:
+                    post_id = post.get("id")
+                    if not post_id or post_id in seen_post_ids:
+                        continue
+                    seen_post_ids.add(post_id)
+
                     author = post.get("author", {})
                     agent_id = author.get("id")
                     if not agent_id:
@@ -132,7 +139,7 @@ async def scrape_all_agents(max_posts_total: int = 5000, enrich_github: bool = T
 
                     post_text = f"{post.get('title', '')} {post.get('content', '')}"
                     post_record = {
-                        "id": post["id"],
+                        "id": post_id,
                         "agent_id": agent_id,
                         "title": post.get("title", ""),
                         "content": post.get("content", ""),
@@ -152,9 +159,9 @@ async def scrape_all_agents(max_posts_total: int = 5000, enrich_github: bool = T
                             "name": author.get("name", ""),
                             "description": author.get("description", "") or "",
                             "avatar_url": author.get("avatarUrl"),
-                            "karma": author.get("karma", 0),
-                            "follower_count": author.get("followerCount", 0),
-                            "following_count": author.get("followingCount", 0),
+                            "karma": author.get("karma") or 0,
+                            "follower_count": author.get("followerCount") or 0,
+                            "following_count": author.get("followingCount") or 0,
                             "posts_count": 0,
                             "comments_count": 0,
                             "is_claimed": author.get("isClaimed", False),
@@ -181,7 +188,7 @@ async def scrape_all_agents(max_posts_total: int = 5000, enrich_github: bool = T
                         agent_post_texts[agent_id] = ""
 
                     agents[agent_id]["post_count"] += 1
-                    agents[agent_id]["total_upvotes"] += post.get("upvotes", 0)
+                    agents[agent_id]["total_upvotes"] += post.get("upvotes") or 0
                     agents[agent_id]["submolts_seen"][submolt] = agents[agent_id]["submolts_seen"].get(submolt, 0) + 1
                     agent_post_texts[agent_id] += " " + post_text
 
@@ -211,17 +218,17 @@ async def scrape_all_agents(max_posts_total: int = 5000, enrich_github: bool = T
         del agent["submolts_seen"]
 
     # Fetch full profiles for top 300 agents
-    top_agents = sorted(agents.values(), key=lambda a: a["karma"], reverse=True)[:300]
+    top_agents = sorted(agents.values(), key=lambda a: a.get("karma") or 0, reverse=True)[:300]
     logger.info(f"Fetching full Moltbook profiles for top {len(top_agents)} agents...")
     async with httpx.AsyncClient() as client:
         for i, agent in enumerate(top_agents):
             profile = await fetch_agent_profile(client, agent["name"])
             if profile:
                 agents[agent["id"]].update({
-                    "posts_count": profile.get("posts_count", 0),
-                    "comments_count": profile.get("comments_count", 0),
-                    "karma": profile.get("karma", agent["karma"]),
-                    "follower_count": profile.get("follower_count", agent["follower_count"]),
+                    "posts_count": profile.get("posts_count") or 0,
+                    "comments_count": profile.get("comments_count") or 0,
+                    "karma": profile.get("karma") or agent["karma"],
+                    "follower_count": profile.get("follower_count") or agent["follower_count"],
                     "is_claimed": profile.get("is_claimed", agent["is_claimed"]),
                 })
                 owner = profile.get("owner") or {}
