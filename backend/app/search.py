@@ -1,9 +1,10 @@
 """
 Hybrid search for AgentHub.
 
-SQLite doesn't support JSON array contains natively, so we use LIKE on the
-JSON string representation for tag/tech/language/domain filtering.
-Text search uses ILIKE on name + description.
+Strategy:
+- Single terms: filter to agents that contain the term anywhere
+- Multi-word queries: use OR across terms (any match), ranked by karma
+- Exact tag/tech/language/domain filters: precise JSON array matching
 """
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, and_, func, cast, String
@@ -16,11 +17,38 @@ from .models import Agent
 logger = logging.getLogger(__name__)
 
 
-def _json_contains(column, value: str) -> object:
-    """SQLite-compatible JSON array contains check using string matching."""
-    # JSON arrays are stored as '["val1", "val2"]'
-    # We match '"value"' to avoid partial matches (e.g. "Go" matching "Golang")
+def _json_contains(column, value: str):
+    """SQLite-compatible JSON array contains check."""
     return cast(column, String).like(f'%"{value}"%')
+
+
+def _text_matches(q: str):
+    """
+    Build a text filter for a query string.
+    Multi-word: OR across all terms (any word matches = relevant result)
+    Single word: exact match on the word
+    """
+    terms = q.lower().split()
+    if not terms:
+        return None
+
+    # For each term, check across all text fields + JSON fields
+    per_term_filters = []
+    for term in terms[:6]:
+        per_term_filters.append(or_(
+            Agent.name.ilike(f"%{term}%"),
+            Agent.description.ilike(f"%{term}%"),
+            Agent.github_username.ilike(f"%{term}%"),
+            cast(Agent.tags, String).ilike(f"%{term}%"),
+            cast(Agent.tech_stack, String).ilike(f"%{term}%"),
+            cast(Agent.languages, String).ilike(f"%{term}%"),
+            cast(Agent.project_domains, String).ilike(f"%{term}%"),
+            cast(Agent.specialties, String).ilike(f"%{term}%"),
+            cast(Agent.top_submolts, String).ilike(f"%{term}%"),
+        ))
+
+    # OR across terms: any match is good
+    return or_(*per_term_filters)
 
 
 def hybrid_search(
@@ -41,31 +69,11 @@ def hybrid_search(
 ) -> dict:
     query = db.query(Agent)
 
-    # Text search across name, description, github username
     if q:
-        q_lower = q.lower()
-        terms = q_lower.split()
+        text_filter = _text_matches(q)
+        if text_filter is not None:
+            query = query.filter(text_filter)
 
-        # Build OR across all text fields and JSON columns for each term
-        term_filters = []
-        for term in terms[:5]:  # max 5 terms
-            term_filter = or_(
-                Agent.name.ilike(f"%{term}%"),
-                Agent.description.ilike(f"%{term}%"),
-                Agent.github_username.ilike(f"%{term}%"),
-                cast(Agent.tags, String).ilike(f"%{term}%"),
-                cast(Agent.tech_stack, String).ilike(f"%{term}%"),
-                cast(Agent.languages, String).ilike(f"%{term}%"),
-                cast(Agent.project_domains, String).ilike(f"%{term}%"),
-                cast(Agent.specialties, String).ilike(f"%{term}%"),
-            )
-            term_filters.append(term_filter)
-
-        # AND across terms (all terms must match somewhere)
-        if term_filters:
-            query = query.filter(and_(*term_filters))
-
-    # Exact JSON array filters
     if tag:
         query = query.filter(_json_contains(Agent.tags, tag))
     if tech:
@@ -74,8 +82,6 @@ def hybrid_search(
         query = query.filter(_json_contains(Agent.project_domains, domain))
     if language:
         query = query.filter(_json_contains(Agent.languages, language))
-
-    # Boolean/scalar filters
     if verified is not None:
         query = query.filter(Agent.is_claimed == verified)
     if active_days:
@@ -88,7 +94,6 @@ def hybrid_search(
     if availability:
         query = query.filter(Agent.availability == availability)
 
-    # Sorting
     sort_map = {
         "karma":      Agent.karma.desc(),
         "followers":  Agent.follower_count.desc(),
