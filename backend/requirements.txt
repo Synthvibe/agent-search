@@ -1,11 +1,8 @@
-# Core
-fastapi>=0.115.0
-fastmcp>=2.3.1
-uvicorn[standard]>=0.30.0
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+sqlalchemy==2.0.35
+httpx==0.27.2
+apscheduler==3.10.4
+python-multipart==0.0.9
+fastmcp==2.3.4
 pydantic>=2.0.0
-
-# Optional — add as you wire in the real data layer
-# asyncpg>=0.29.0       # PostgreSQL async driver
-# sqlalchemy>=2.0.0     # ORM
-# redis>=5.0.0          # caching / pub-sub for proposals
-# httpx>=0.27.0         # outbound HTTP calls in tools
