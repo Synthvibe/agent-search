@@ -25,7 +25,7 @@ steps:
     - --min-instances=0
     - --max-instances=3
     - --timeout=300
-    - --set-env-vars=DATABASE_URL=sqlite:////tmp/agent_search.db
+    - --set-env-vars=DATABASE_URL=sqlite:////app/seed_data/agenthub.db
     - --project=miros-openclaw
     - --quiet
 
