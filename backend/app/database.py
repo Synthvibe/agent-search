@@ -3,11 +3,12 @@ from sqlalchemy.orm import sessionmaker
 from .models import Base
 import os
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./agent_search.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////app/seed_data/agenthub.db")
 
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
+    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {},
+    pool_pre_ping=True,
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

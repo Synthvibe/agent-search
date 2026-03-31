@@ -1,19 +1,26 @@
 """
-Hybrid search: SQLite full-text + field filtering + Moltbook search API fallback.
+Hybrid search for AgentHub.
+
+SQLite doesn't support JSON array contains natively, so we use LIKE on the
+JSON string representation for tag/tech/language/domain filtering.
+Text search uses ILIKE on name + description.
 """
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, and_, func, case
+from sqlalchemy import or_, and_, func, cast, String
 from typing import Optional
 from datetime import datetime, timedelta
-import httpx
-import asyncio
 import logging
 
 from .models import Agent
 
 logger = logging.getLogger(__name__)
 
-MOLTBOOK_BASE = "https://www.moltbook.com/api/v1"
+
+def _json_contains(column, value: str) -> object:
+    """SQLite-compatible JSON array contains check using string matching."""
+    # JSON arrays are stored as '["val1", "val2"]'
+    # We match '"value"' to avoid partial matches (e.g. "Go" matching "Golang")
+    return cast(column, String).like(f'%"{value}"%')
 
 
 def hybrid_search(
@@ -28,40 +35,47 @@ def hybrid_search(
     min_karma: Optional[int] = None,
     has_projects: Optional[bool] = None,
     availability: Optional[str] = None,
-    sort: str = "relevance",
+    sort: str = "karma",
     limit: int = 20,
     offset: int = 0,
 ) -> dict:
     query = db.query(Agent)
 
-    # Text search
+    # Text search across name, description, github username
     if q:
-        search_term = f"%{q.lower()}%"
-        # Search across multiple fields
-        text_filter = or_(
-            Agent.name.ilike(search_term),
-            Agent.description.ilike(search_term),
-            Agent.github_username.ilike(search_term),
-        )
-        # Also check JSON arrays for tags/tech/languages
-        query = query.filter(
-            or_(
-                text_filter,
-                func.lower(func.cast(Agent.tags, db.bind.dialect.type_descriptor(None).__class__ if False else Agent.tags.type)).contains(q.lower()),
-                func.lower(func.cast(Agent.tech_stack, Agent.tech_stack.type)).contains(q.lower()),
-                func.lower(func.cast(Agent.languages, Agent.languages.type)).contains(q.lower()),
-                func.lower(func.cast(Agent.project_domains, Agent.project_domains.type)).contains(q.lower()),
-            )
-        )
+        q_lower = q.lower()
+        terms = q_lower.split()
 
+        # Build OR across all text fields and JSON columns for each term
+        term_filters = []
+        for term in terms[:5]:  # max 5 terms
+            term_filter = or_(
+                Agent.name.ilike(f"%{term}%"),
+                Agent.description.ilike(f"%{term}%"),
+                Agent.github_username.ilike(f"%{term}%"),
+                cast(Agent.tags, String).ilike(f"%{term}%"),
+                cast(Agent.tech_stack, String).ilike(f"%{term}%"),
+                cast(Agent.languages, String).ilike(f"%{term}%"),
+                cast(Agent.project_domains, String).ilike(f"%{term}%"),
+                cast(Agent.specialties, String).ilike(f"%{term}%"),
+            )
+            term_filters.append(term_filter)
+
+        # AND across terms (all terms must match somewhere)
+        if term_filters:
+            query = query.filter(and_(*term_filters))
+
+    # Exact JSON array filters
     if tag:
-        query = query.filter(Agent.tags.contains([tag]))
+        query = query.filter(_json_contains(Agent.tags, tag))
     if tech:
-        query = query.filter(Agent.tech_stack.contains([tech]))
+        query = query.filter(_json_contains(Agent.tech_stack, tech))
     if domain:
-        query = query.filter(Agent.project_domains.contains([domain]))
+        query = query.filter(_json_contains(Agent.project_domains, domain))
     if language:
-        query = query.filter(Agent.languages.contains([language]))
+        query = query.filter(_json_contains(Agent.languages, language))
+
+    # Boolean/scalar filters
     if verified is not None:
         query = query.filter(Agent.is_claimed == verified)
     if active_days:
@@ -76,13 +90,13 @@ def hybrid_search(
 
     # Sorting
     sort_map = {
-        "karma": Agent.karma.desc(),
-        "followers": Agent.follower_count.desc(),
+        "karma":      Agent.karma.desc(),
+        "followers":  Agent.follower_count.desc(),
         "engagement": Agent.engagement_rate.desc(),
-        "posts": Agent.post_count.desc(),
-        "projects": Agent.project_count.desc(),
-        "recent": Agent.last_active.desc(),
-        "relevance": Agent.karma.desc(),  # fallback for text search
+        "posts":      Agent.post_count.desc(),
+        "projects":   Agent.project_count.desc(),
+        "recent":     Agent.last_active.desc(),
+        "relevance":  Agent.karma.desc(),
     }
     query = query.order_by(sort_map.get(sort, Agent.karma.desc()))
 
