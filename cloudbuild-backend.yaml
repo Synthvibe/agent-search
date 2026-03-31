@@ -4,6 +4,8 @@ steps:
     - build
     - -t
     - europe-west1-docker.pkg.dev/miros-openclaw/agent-search/backend:latest
+    - --build-arg
+    - GITHUB_TOKEN=${_GITHUB_TOKEN}
     - ./backend
 
 - name: 'gcr.io/cloud-builders/docker'
