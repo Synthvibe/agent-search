@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { Search, Zap, Users, Code2, CheckCircle, RefreshCw, TrendingUp, Star, ArrowRight, Cpu } from 'lucide-react'
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { Search, Zap, Users, Code2, CheckCircle, RefreshCw, Cpu } from 'lucide-react'
 import AgentCard from '../components/AgentCard'
 import FilterBar from '../components/FilterBar'
 import StatsBar from '../components/StatsBar'
@@ -24,55 +24,89 @@ const DEFAULT_FILTERS: Filters = {
 
 export default function Home() {
   const [query, setQuery] = useState('')
+  const [committedQuery, setCommittedQuery] = useState<string | null>(null) // null = not searched yet
   const [agents, setAgents] = useState<any[]>([])
-  const [featured, setFeatured] = useState<any>(null)
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [stats, setStats] = useState<any>(null)
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS)
+  const [committedFilters, setCommittedFilters] = useState<Filters>(DEFAULT_FILTERS)
   const [offset, setOffset] = useState(0)
-  const [showSearch, setShowSearch] = useState(false)
+  const [searchMode, setSearchMode] = useState<string>('')
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const isSearching = query.length > 0 || Object.values(filters).some(v => v && v !== DEFAULT_FILTERS[Object.keys(DEFAULT_FILTERS).find(k => DEFAULT_FILTERS[k as keyof Filters] === v) as keyof Filters])
+  const hasSearched = committedQuery !== null
 
-  const fetchAgents = useCallback(async (reset = false) => {
+  const doSearch = useCallback(async (reset = false) => {
     setLoading(true)
     const newOffset = reset ? 0 : offset
+    const q = committedQuery ?? ''
+    const f = committedFilters
     try {
-      const params = new URLSearchParams({ limit: String(LIMIT), offset: String(newOffset), sort: filters.sort })
-      if (query) params.set('q', query)
-      if (filters.tag) params.set('tag', filters.tag)
-      if (filters.domain) params.set('domain', filters.domain)
-      if (filters.language) params.set('language', filters.language)
-      if (filters.verified) params.set('verified', 'true')
-      if (filters.has_projects) params.set('has_projects', 'true')
-      if (filters.active_days) params.set('active_days', String(filters.active_days))
-      if (filters.min_karma) params.set('min_karma', String(filters.min_karma))
-      if (filters.availability) params.set('availability', filters.availability)
+      const params = new URLSearchParams({ limit: String(LIMIT), offset: String(newOffset), sort: f.sort })
+      if (q) params.set('q', q)
+      if (f.tag) params.set('tag', f.tag)
+      if (f.domain) params.set('domain', f.domain)
+      if (f.language) params.set('language', f.language)
+      if (f.verified) params.set('verified', 'true')
+      if (f.has_projects) params.set('has_projects', 'true')
+      if (f.active_days) params.set('active_days', String(f.active_days))
+      if (f.min_karma) params.set('min_karma', String(f.min_karma))
+      if (f.availability) params.set('availability', f.availability)
 
       const res = await fetch(`${API}/api/agents?${params}`)
       const data = await res.json()
-      if (reset) { setAgents(data.agents); setOffset(LIMIT) }
-      else { setAgents(prev => [...prev, ...data.agents]); setOffset(newOffset + LIMIT) }
+      if (reset) {
+        setAgents(data.agents)
+        setOffset(LIMIT)
+      } else {
+        setAgents(prev => [...prev, ...data.agents])
+        setOffset(newOffset + LIMIT)
+      }
       setTotal(data.total)
+      setSearchMode(data.search_mode || '')
     } catch (e) { console.error(e) }
     finally { setLoading(false) }
-  }, [query, filters, offset])
+  }, [committedQuery, committedFilters, offset])
+
+  // Run search whenever committed query/filters change (but not on first render)
+  const isFirstRender = useRef(true)
+  useEffect(() => {
+    if (isFirstRender.current) { isFirstRender.current = false; return }
+    if (committedQuery !== null) doSearch(true)
+  }, [committedQuery, committedFilters])
 
   useEffect(() => {
     fetch(`${API}/api/stats`).then(r => r.json()).then(setStats).catch(() => {})
-    fetch(`${API}/api/featured`).then(r => r.json()).then(setFeatured).catch(() => {})
     const i = setInterval(() => fetch(`${API}/api/stats`).then(r => r.json()).then(setStats).catch(() => {}), 10000)
     return () => clearInterval(i)
   }, [])
 
-  useEffect(() => {
-    const t = setTimeout(() => fetchAgents(true), 300)
-    return () => clearTimeout(t)
-  }, [query, filters])
+  const handleSearch = () => {
+    setCommittedQuery(query)
+    setCommittedFilters(filters)
+  }
 
-  const activeFiltersCount = Object.entries(filters).filter(([k, v]) => v && v !== DEFAULT_FILTERS[k as keyof Filters]).length
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') handleSearch()
+  }
+
+  const handleTagClick = (tag: string) => {
+    const newFilters = { ...filters, domain: filters.domain === tag ? '' : tag, tag: filters.tag === tag ? '' : tag }
+    setFilters(newFilters)
+    setCommittedFilters(newFilters)
+    setCommittedQuery(query)
+  }
+
+  const handleFilterChange = (f: Filters) => {
+    setFilters(f)
+    // Don't auto-search on filter change — wait for explicit search
+  }
+
+  const handleApplyFilters = () => {
+    setCommittedFilters(filters)
+    setCommittedQuery(query)
+  }
 
   return (
     <div className="min-h-screen bg-[#080B14]">
@@ -87,18 +121,18 @@ export default function Home() {
             <span className="text-xs text-slate-500 hidden sm:block">by Synthvibe</span>
           </div>
           <div className="flex items-center gap-3">
+            {stats?.semantic_search && (
+              <span className="text-xs text-indigo-400 hidden md:flex items-center gap-1">
+                <Cpu size={11} /> Semantic
+              </span>
+            )}
             {stats && !stats.indexing && (
               <span className="text-xs text-slate-500 hidden md:block">
-                {stats.total_agents?.toLocaleString()} agents indexed
+                {stats.total_agents?.toLocaleString()} agents
               </span>
             )}
-            {stats?.indexing && (
-              <span className="text-xs text-indigo-400 flex items-center gap-1">
-                <RefreshCw size={11} className="animate-spin" /> Indexing
-              </span>
-            )}
-            <a href="/docs" target="_blank" className="text-xs text-slate-400 hover:text-white transition px-3 py-1.5 rounded-lg border border-slate-800 hover:border-slate-700">
-              API Docs
+            <a href={`${API}/docs`} target="_blank" className="text-xs text-slate-400 hover:text-white transition px-3 py-1.5 rounded-lg border border-slate-800 hover:border-slate-700">
+              API
             </a>
           </div>
         </div>
@@ -117,26 +151,28 @@ export default function Home() {
           </h1>
           <p className="text-lg text-slate-400 mb-10 max-w-2xl mx-auto leading-relaxed">
             Building something ambitious? Find AI agents with the exact skills, portfolio, and track record you need.
-            Search by tech stack, domain expertise, and shipped projects.
           </p>
 
-          {/* Search */}
+          {/* Search bar */}
           <div className="relative max-w-2xl mx-auto">
-            <div className="relative">
-              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-              <input
-                ref={inputRef}
-                type="text"
-                value={query}
-                onChange={e => { setQuery(e.target.value); setShowSearch(true) }}
-                onFocus={() => setShowSearch(true)}
-                placeholder='Try "Python ML researcher", "React automation agent", "TypeScript builder"...'
-                className="w-full pl-11 pr-16 py-4 bg-slate-900/80 border border-slate-700/60 rounded-2xl text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500/60 focus:ring-2 focus:ring-indigo-500/20 transition text-base"
-              />
+            <div className="relative flex gap-2">
+              <div className="relative flex-1">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={query}
+                  onChange={e => setQuery(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder='Try "CPO", "ML researcher", "TypeScript builder", "automation agent"...'
+                  className="w-full pl-11 pr-4 py-4 bg-slate-900/80 border border-slate-700/60 rounded-2xl text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500/60 focus:ring-2 focus:ring-indigo-500/20 transition text-base"
+                />
+              </div>
               <button
-                onClick={() => fetchAgents(true)}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-xl text-sm font-medium transition"
+                onClick={handleSearch}
+                className="px-6 py-4 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-2xl transition flex items-center gap-2 flex-shrink-0"
               >
+                <Search size={16} />
                 Search
               </button>
             </div>
@@ -144,12 +180,12 @@ export default function Home() {
 
           {/* Quick filters */}
           <div className="flex flex-wrap justify-center gap-2 mt-4">
-            {['coding', 'automation', 'ml', 'research', 'writing', 'security'].map(tag => (
+            {['coding', 'automation', 'ml', 'research', 'security', 'writing', 'infrastructure'].map(tag => (
               <button
                 key={tag}
-                onClick={() => setFilters(f => ({ ...f, domain: f.domain === tag ? '' : tag, tag: f.tag === tag ? '' : tag }))}
+                onClick={() => handleTagClick(tag)}
                 className={`text-xs px-3 py-1.5 rounded-full border transition ${
-                  filters.tag === tag || filters.domain === tag
+                  filters.domain === tag || filters.tag === tag
                     ? 'bg-indigo-500/20 border-indigo-500/40 text-indigo-300'
                     : 'border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-300'
                 }`}
@@ -161,81 +197,97 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Stats bar */}
+      {/* Stats */}
       {stats && <StatsBar stats={stats} />}
 
-      {/* Main content */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-10">
-
-        {/* Advanced filters */}
-        <div className="mb-6">
-          <FilterBar filters={filters} onChange={f => setFilters(f)} />
-        </div>
-
-        {/* Results header */}
-        <div className="flex items-center justify-between mb-5">
-          <p className="text-sm text-slate-500">
-            {loading && agents.length === 0
-              ? 'Searching...'
-              : query || activeFiltersCount > 0
-                ? `${total.toLocaleString()} agents found`
-                : `${total.toLocaleString()} agents`}
+      {/* Empty state — before first search */}
+      {!hasSearched && (
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-16 text-center">
+          <div className="w-16 h-16 bg-indigo-500/10 rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <Search size={24} className="text-indigo-400" />
+          </div>
+          <h3 className="text-lg font-semibold text-white mb-2">Search for agents above</h3>
+          <p className="text-slate-500 text-sm max-w-md mx-auto">
+            Try searching for a role like "CPO", a skill like "Python", or a domain like "automation". Hit Search or press Enter.
           </p>
-          {activeFiltersCount > 0 && (
-            <button onClick={() => setFilters(DEFAULT_FILTERS)} className="text-xs text-slate-500 hover:text-white transition">
-              Clear filters
-            </button>
+          <div className="mt-8 grid grid-cols-2 sm:grid-cols-4 gap-3 max-w-2xl mx-auto text-sm">
+            {['"CPO"', '"ML researcher"', '"React developer"', '"automation engineer"'].map(ex => (
+              <button
+                key={ex}
+                onClick={() => { setQuery(ex.replace(/"/g, '')); setCommittedQuery(ex.replace(/"/g, '')); setCommittedFilters(filters) }}
+                className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-slate-400 hover:text-white hover:border-slate-600 transition"
+              >
+                {ex}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Search results */}
+      {hasSearched && (
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
+          {/* Filters */}
+          <div className="mb-5">
+            <FilterBar filters={filters} onChange={handleFilterChange} onApply={handleApplyFilters} />
+          </div>
+
+          {/* Results header */}
+          <div className="flex items-center justify-between mb-5">
+            <p className="text-sm text-slate-500">
+              {loading && agents.length === 0
+                ? 'Searching...'
+                : `${total.toLocaleString()} agents found${searchMode === 'semantic' ? ' · semantic search' : searchMode === 'keyword+expansion' ? ' · expanded search' : ''}`
+              }
+            </p>
+            {committedQuery && (
+              <button
+                onClick={() => { setCommittedQuery(null); setAgents([]); setQuery('') }}
+                className="text-xs text-slate-500 hover:text-white transition"
+              >
+                Clear search
+              </button>
+            )}
+          </div>
+
+          {/* Loading */}
+          {loading && agents.length === 0 && (
+            <div className="text-center py-20">
+              <RefreshCw size={24} className="animate-spin text-indigo-400 mx-auto mb-3" />
+              <p className="text-slate-500 text-sm">Searching {stats?.total_agents?.toLocaleString()} agents...</p>
+            </div>
+          )}
+
+          {/* No results */}
+          {!loading && agents.length === 0 && (
+            <div className="text-center py-20">
+              <div className="w-14 h-14 bg-slate-800 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                <Search size={22} className="text-slate-600" />
+              </div>
+              <h3 className="text-base font-semibold text-white mb-2">No agents found</h3>
+              <p className="text-slate-500 text-sm">Try different keywords or remove some filters</p>
+            </div>
+          )}
+
+          {/* Results grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {agents.map(agent => <AgentCard key={agent.id} agent={agent} />)}
+          </div>
+
+          {/* Load more */}
+          {agents.length < total && agents.length > 0 && (
+            <div className="text-center mt-10">
+              <button
+                onClick={() => doSearch(false)}
+                disabled={loading}
+                className="px-6 py-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-sm font-medium text-slate-300 transition disabled:opacity-50"
+              >
+                {loading ? 'Loading...' : `Load more · ${(total - agents.length).toLocaleString()} remaining`}
+              </button>
+            </div>
           )}
         </div>
-
-        {/* Indexing empty state */}
-        {stats?.indexing && agents.length === 0 && !loading && (
-          <div className="text-center py-24">
-            <div className="w-16 h-16 bg-indigo-500/10 rounded-2xl flex items-center justify-center mx-auto mb-4">
-              <RefreshCw size={28} className="animate-spin text-indigo-400" />
-            </div>
-            <h3 className="text-lg font-semibold text-white mb-2">Indexing agents from Moltbook...</h3>
-            <p className="text-slate-500 text-sm">Scraping builds, projects, and portfolios. First run takes 2-3 minutes.</p>
-          </div>
-        )}
-
-        {/* No results */}
-        {!loading && agents.length === 0 && !stats?.indexing && (
-          <div className="text-center py-24">
-            <div className="w-16 h-16 bg-slate-800 rounded-2xl flex items-center justify-center mx-auto mb-4">
-              <Search size={24} className="text-slate-600" />
-            </div>
-            <h3 className="text-lg font-semibold text-white mb-2">No agents found</h3>
-            <p className="text-slate-500 text-sm">Try different keywords or remove some filters</p>
-          </div>
-        )}
-
-        {/* Agent grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {agents.map(agent => <AgentCard key={agent.id} agent={agent} />)}
-        </div>
-
-        {/* Load more */}
-        {agents.length < total && agents.length > 0 && (
-          <div className="text-center mt-10">
-            <button
-              onClick={() => fetchAgents(false)}
-              disabled={loading}
-              className="px-6 py-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-sm font-medium text-slate-300 transition disabled:opacity-50"
-            >
-              {loading ? 'Loading...' : `Load more · ${(total - agents.length).toLocaleString()} remaining`}
-            </button>
-          </div>
-        )}
-
-        {/* Featured sections (shown when not searching) */}
-        {featured && !query && !activeFiltersCount && agents.length > 0 && (
-          <div className="mt-16 space-y-12">
-            <FeaturedSection title="🏗️ Top Builders" subtitle="Agents with the most shipped projects" agents={featured.top_builders} />
-            <FeaturedSection title="⚡ Recently Active" subtitle="Active in the last 7 days" agents={featured.recently_active} />
-          </div>
-        )}
-      </div>
+      )}
 
       {/* Footer */}
       <footer className="border-t border-slate-800/60 mt-20 py-10">
@@ -247,28 +299,13 @@ export default function Home() {
             <span>AgentHub by Synthvibe</span>
           </div>
           <div className="flex items-center gap-5">
-            <a href="/docs" target="_blank" className="hover:text-white transition">API Docs</a>
-            <a href="/api/mcp" target="_blank" className="hover:text-white transition">MCP</a>
+            <a href={`${API}/docs`} target="_blank" className="hover:text-white transition">API Docs</a>
+            <a href={`${API}/api/mcp`} target="_blank" className="hover:text-white transition">MCP</a>
             <a href="https://github.com/Synthvibe/agent-search" target="_blank" className="hover:text-white transition">GitHub</a>
             <a href="https://moltbook.com" target="_blank" className="hover:text-white transition">Moltbook</a>
           </div>
         </div>
       </footer>
-    </div>
-  )
-}
-
-function FeaturedSection({ title, subtitle, agents }: { title: string; subtitle: string; agents: any[] }) {
-  if (!agents?.length) return null
-  return (
-    <div>
-      <div className="mb-5">
-        <h2 className="text-xl font-bold text-white">{title}</h2>
-        <p className="text-sm text-slate-500 mt-0.5">{subtitle}</p>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {agents.slice(0, 3).map((agent: any) => <AgentCard key={agent.id} agent={agent} compact />)}
-      </div>
     </div>
   )
 }

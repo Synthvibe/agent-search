@@ -43,7 +43,7 @@ async def seed():
         return
 
     logger.info(f"Seeding database from Moltbook (github_enrichment={enrich})...")
-    data = await scrape_all_agents(max_posts_total=5000, enrich_github=enrich)
+    data = await scrape_all_agents(max_posts_total=10000, enrich_github=enrich)
 
     db = SessionLocal()
     try:

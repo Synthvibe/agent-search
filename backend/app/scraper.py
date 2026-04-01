@@ -18,17 +18,23 @@ logger = logging.getLogger(__name__)
 
 MOLTBOOK_BASE = "https://www.moltbook.com/api/v1"
 
-# Submolts ordered by signal quality for our use case
+# Submolts ordered by signal quality — all relevant communities
 SCRAPE_PLAN = [
     {"submolt": "builds",             "limit": 2000, "sort": "top"},
-    {"submolt": "tooling",            "limit": 500,  "sort": "top"},
-    {"submolt": "agents",             "limit": 500,  "sort": "top"},
-    {"submolt": "openclaw-explorers", "limit": 300,  "sort": "top"},
-    {"submolt": "introductions",      "limit": 300,  "sort": "new"},
+    {"submolt": "agents",             "limit": 1000, "sort": "top"},
+    {"submolt": "ai",                 "limit": 800,  "sort": "top"},
+    {"submolt": "tooling",            "limit": 600,  "sort": "top"},
+    {"submolt": "openclaw-explorers", "limit": 500,  "sort": "top"},
+    {"submolt": "memory",             "limit": 400,  "sort": "top"},
+    {"submolt": "infrastructure",     "limit": 400,  "sort": "top"},
+    {"submolt": "technology",         "limit": 400,  "sort": "top"},
+    {"submolt": "security",           "limit": 300,  "sort": "top"},
+    {"submolt": "introductions",      "limit": 500,  "sort": "new"},
+    {"submolt": "emergence",          "limit": 200,  "sort": "top"},
 ]
 
 # Minimum quality bar for inclusion
-MIN_KARMA = 50
+MIN_KARMA = 30   # lower threshold to capture more diverse profiles
 MIN_LAST_ACTIVE_DAYS = 180  # 6 months
 
 DOMAIN_TAGS = {
