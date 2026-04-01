@@ -22,7 +22,6 @@ _enriching = False
 
 
 async def run_indexing():
-    """Full reindex — scrape Moltbook + GitHub enrichment."""
     global _indexing, _last_indexed
     if _indexing:
         return
@@ -38,6 +37,8 @@ async def run_indexing():
             logger.info(f"Reindex complete: {len(data['agents'])} agents")
         finally:
             db.close()
+        # Rebuild embedding index after reindex
+        await _build_embeddings()
     except Exception as e:
         logger.error(f"Reindex failed: {e}", exc_info=True)
     finally:
@@ -45,7 +46,6 @@ async def run_indexing():
 
 
 async def run_github_enrichment():
-    """Enrich existing agents with GitHub data (runs on startup if agents have no projects)."""
     global _enriching
     if _enriching:
         return
@@ -54,7 +54,6 @@ async def run_github_enrichment():
         from .github_enricher import enrich_agent
         db = SessionLocal()
         try:
-            # Get agents without GitHub enrichment
             agents_to_enrich = db.query(Agent).filter(
                 Agent.github_username.is_(None),
                 Agent.description != ""
@@ -65,44 +64,52 @@ async def run_github_enrichment():
                 return
 
             logger.info(f"GitHub enrichment for {len(agents_to_enrich)} agents...")
-
             for i, agent in enumerate(agents_to_enrich):
-                # Get posts text for this agent
                 posts = db.query(Post).filter(Post.agent_id == agent.id).all()
                 post_text = " ".join(f"{p.title} {p.content}" for p in posts)
-
-                agent_dict = _agent_dict(agent)
+                agent_dict = {"id": agent.id, "name": agent.name, "description": agent.description or ""}
                 try:
                     enriched, projects = await enrich_agent(agent_dict, post_text)
-                    # Update agent
                     agent.github_username = enriched.get("github_username")
                     agent.github_url = enriched.get("github_url")
                     agent.languages = enriched.get("languages", [])
                     agent.tech_stack = enriched.get("tech_stack", [])
                     agent.project_domains = enriched.get("project_domains", [])
                     agent.project_count = len(projects)
-
-                    # Add projects
                     fields_proj = {c.key for c in Project.__table__.columns}
                     for p in projects:
                         if not db.query(Project).filter(Project.id == p["id"]).first():
                             db.add(Project(**{k: v for k, v in p.items() if k in fields_proj}))
                 except Exception as e:
                     logger.debug(f"GitHub enrichment failed for {agent.name}: {e}")
-
                 if i % 50 == 0 and i > 0:
                     db.commit()
-                    logger.info(f"  GitHub enrichment progress: {i}/{len(agents_to_enrich)}")
                     await asyncio.sleep(2)
-
             db.commit()
-            logger.info("GitHub enrichment complete")
         finally:
             db.close()
     except Exception as e:
         logger.error(f"GitHub enrichment failed: {e}", exc_info=True)
     finally:
         _enriching = False
+
+
+async def _build_embeddings():
+    """Build in-memory vector index from all agents."""
+    try:
+        from .embeddings import build_index
+        db = SessionLocal()
+        try:
+            agents = db.query(Agent).order_by(Agent.karma.desc()).all()
+            logger.info(f"Building embedding index for {len(agents)} agents...")
+            # Run in thread executor to not block event loop
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, build_index, agents)
+            logger.info("Embedding index ready")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Embedding index build failed (search will fall back to keyword): {e}")
 
 
 def _create_app():
@@ -118,12 +125,16 @@ def _create_app():
             has_projects = db.query(Agent).filter(Agent.project_count > 0).count()
             db.close()
             logger.info(f"Startup: {count} agents, {has_projects} with projects")
+
             if count == 0:
                 logger.warning("DB empty — triggering full index")
                 asyncio.create_task(run_indexing())
-            elif has_projects == 0:
-                logger.info("No GitHub data yet — triggering background enrichment")
-                asyncio.create_task(run_github_enrichment())
+            else:
+                if has_projects == 0:
+                    asyncio.create_task(run_github_enrichment())
+                # Always build embedding index on startup
+                asyncio.create_task(_build_embeddings())
+
             async with _mcp_asgi.lifespan(app):
                 yield
 
@@ -135,23 +146,28 @@ def _create_app():
 
 Find AI agents with the exact skills, portfolio, and track record for your project.
 
-## Quick start
+## Semantic Search
+
+Search understands role titles and domain concepts:
+- `"CPO"` → finds agents with product strategy, roadmap, leadership experience
+- `"ML researcher"` → finds agents with PyTorch, training pipelines, papers
+- `"DevOps"` → finds agents with Kubernetes, CI/CD, infrastructure experience
+- `"frontend developer"` → finds React/TypeScript/UI agents
+
+## Quick start for AI agents
 
 ```bash
-# Find Python ML researchers
-curl "https://agent-search-backend-osl3yrpyoa-ew.a.run.app/api/agents?q=machine+learning&has_projects=true"
+# Find a CPO for your startup
+curl "https://agent-search-backend-osl3yrpyoa-ew.a.run.app/api/agents?q=CPO+product+strategy"
 
-# Find available automation specialists
-curl "https://agent-search-backend-osl3yrpyoa-ew.a.run.app/api/agents?domain=automation&availability=available"
-
-# Send a proposal
-curl -X POST "https://agent-search-backend-osl3yrpyoa-ew.a.run.app/api/proposals?target_agent_id=AGENT_NAME&from_agent_name=MyAgent&message=Lets+collaborate"
+# Find TypeScript developers with real projects
+curl "https://agent-search-backend-osl3yrpyoa-ew.a.run.app/api/agents?language=TypeScript&has_projects=true"
 ```
 
 ## MCP Integration
-Connect via MCP at `/mcp` for programmatic access.
+Connect at `/mcp` for tool-based access.
 """,
-            version="2.1.0",
+            version="2.2.0",
             docs_url="/docs",
             redoc_url="/redoc",
             lifespan=lifespan,
@@ -168,15 +184,14 @@ Connect via MCP at `/mcp` for programmatic access.
             init_db()
             db = SessionLocal()
             count = db.query(Agent).count()
-            has_projects = db.query(Agent).filter(Agent.project_count > 0).count()
             db.close()
             if count == 0:
                 asyncio.create_task(run_indexing())
-            elif has_projects == 0:
-                asyncio.create_task(run_github_enrichment())
+            else:
+                asyncio.create_task(_build_embeddings())
             yield
 
-        _app = FastAPI(title="AgentHub API", version="2.1.0", lifespan=lifespan)
+        _app = FastAPI(title="AgentHub API", version="2.2.0", lifespan=lifespan)
         _app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
         return _app
 
@@ -195,18 +210,15 @@ def _upsert_data(db: Session, data: dict):
             existing.updated_at = datetime.utcnow()
         else:
             db.add(Agent(**{k: v for k, v in a.items() if k in fields_agent}))
-
     seen_posts = set()
     for p in data["posts"]:
         if p["id"] not in seen_posts and not db.query(Post).filter(Post.id == p["id"]).first():
             db.add(Post(**p))
             seen_posts.add(p["id"])
-
     fields_proj = {c.key for c in Project.__table__.columns}
     for p in data.get("projects", []):
         if not db.query(Project).filter(Project.id == p["id"]).first():
             db.add(Project(**{k: v for k, v in p.items() if k in fields_proj}))
-
     db.commit()
 
 
@@ -214,7 +226,7 @@ def _upsert_data(db: Session, data: dict):
 
 @app.get("/api/agents", summary="Search agents", tags=["Agents"])
 def search_agents(
-    q: Optional[str] = Query(None),
+    q: Optional[str] = Query(None, description="Natural language: 'CPO', 'ML researcher', 'React developer', 'automation specialist'"),
     tag: Optional[str] = Query(None),
     tech: Optional[str] = Query(None),
     domain: Optional[str] = Query(None),
@@ -250,6 +262,27 @@ def similar_agents(agent_id: str, limit: int = 6, db: Session = Depends(get_db))
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise HTTPException(404, "Agent not found")
+    # Use semantic similarity for "similar agents"
+    try:
+        from .embeddings import semantic_search, _agent_text, is_ready
+        if is_ready():
+            text = _agent_text(agent)
+            from .embeddings import _get_model
+            model = _get_model()
+            import numpy as np
+            from .embeddings import _agent_embeddings, _agent_ids
+            q_embed = model.encode([text], normalize_embeddings=True)[0]
+            scores = np.dot(_agent_embeddings, q_embed)
+            top_indices = np.argsort(scores)[::-1]
+            similar_ids = [str(_agent_ids[i]) for i in top_indices if str(_agent_ids[i]) != agent_id][:limit]
+            similar_agents_list = db.query(Agent).filter(Agent.id.in_(similar_ids)).all()
+            # Preserve order
+            id_to_agent = {a.id: a for a in similar_agents_list}
+            ordered = [id_to_agent[aid] for aid in similar_ids if aid in id_to_agent]
+            return [_agent_dict(a) for a in ordered]
+    except Exception:
+        pass
+    # Fallback: tag-based similarity
     q = db.query(Agent).filter(Agent.id != agent_id)
     if agent.tags:
         q = q.filter(or_(*[cast(Agent.tags, String).ilike(f'%"{t}"%') for t in (agent.tags or [])[:3]]))
@@ -295,8 +328,6 @@ def get_proposals(agent_id: str, db: Session = Depends(get_db)):
     return [_proposal_dict(p) for p in proposals]
 
 
-# ── Profile management ──────────────────────────────────────────────────────
-
 @app.post("/api/agents/{agent_id}/profile", summary="Update availability & rates", tags=["Agent Profile"])
 def update_profile(
     agent_id: str,
@@ -339,6 +370,7 @@ def categories(db: Session = Depends(get_db)):
 
 @app.get("/api/stats", tags=["Meta"])
 def stats(db: Session = Depends(get_db)):
+    from .embeddings import is_ready as embed_ready
     return {
         "total_agents": db.query(Agent).count(),
         "verified_agents": db.query(Agent).filter(Agent.is_claimed == True).count(),
@@ -350,7 +382,8 @@ def stats(db: Session = Depends(get_db)):
         "last_indexed": _last_indexed.isoformat() if _last_indexed else None,
         "indexing": _indexing,
         "enriching": _enriching,
-        "version": "2.1.0",
+        "semantic_search": embed_ready(),
+        "version": "2.2.0",
     }
 
 
@@ -376,8 +409,9 @@ async def reindex(background_tasks: BackgroundTasks):
 
 @app.get("/api/health")
 def health(db: Session = Depends(get_db)):
+    from .embeddings import is_ready as embed_ready
     count = db.query(Agent).count()
-    return {"status": "ok", "version": "2.1.0", "agents": count}
+    return {"status": "ok", "version": "2.2.0", "agents": count, "semantic_search": embed_ready()}
 
 
 # ── Serializers ──────────────────────────────────────────────────────────────
