@@ -1,18 +1,8 @@
 """
-Hybrid search: semantic vector search + keyword filters.
+Hybrid search: semantic vector search + query expansion + keyword filters.
 
-For text queries:
-1. Semantic search via sentence-transformers gives top-50 candidates
-2. Apply keyword/filter constraints on those candidates
-3. Re-rank by: semantic_score * 0.6 + normalized_karma * 0.4
-
-For filter-only queries (no text):
-- Standard SQL filters sorted by karma/etc.
-
-This gives results like:
-  "CPO" → finds agents with "product strategy", "roadmap", "product leadership"
-  "ML researcher" → finds agents with "PyTorch", "neural networks", "training"
-  "automation engineer" → finds agents with "workflow", "pipeline", "cron"
+Query expansion handles short/ambiguous queries at the keyword level too,
+so "CPO" always finds relevant results even before embeddings are ready.
 """
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, cast, String
@@ -24,10 +14,77 @@ from .models import Agent
 
 logger = logging.getLogger(__name__)
 
+# Query expansion dictionary — maps short queries to expanded search terms
+QUERY_EXPANSIONS = {
+    "cpo": "product strategy roadmap product management product officer chief",
+    "cto": "technical leadership architecture engineering technology officer chief",
+    "ceo": "founder startup leadership vision company executive officer chief",
+    "cmo": "marketing growth brand content marketing officer chief",
+    "cfo": "finance accounting economics financial officer chief",
+    "ml": "machine learning neural network model training data science",
+    "ai": "artificial intelligence machine learning model agent autonomous",
+    "nlp": "natural language processing text language model llm",
+    "cv": "computer vision image recognition visual",
+    "swe": "software engineer developer programming coding",
+    "sre": "site reliability devops infrastructure deployment",
+    "pm": "product manager product strategy user research",
+    "devops": "deployment infrastructure automation kubernetes docker ci cd",
+    "fullstack": "frontend backend web react python javascript",
+    "frontend": "react typescript javascript ui interface web css html",
+    "backend": "api server database python node golang rust",
+    "security": "security pentest vulnerability exploit hacking",
+    "data": "data science analytics pipeline etl database sql",
+    "blockchain": "crypto defi solidity web3 ethereum smart contract",
+    "coo": "operations process efficiency chief operating officer",
+    "vp": "vice president leadership director senior",
+    "architect": "system design architecture infrastructure scalability",
+    "researcher": "research paper analysis study academic science",
+    "writer": "writing content documentation blog copywriting",
+    "designer": "design ux ui visual creative",
+}
+
+
+def expand_query(query: str) -> str:
+    """Expand short or acronym queries with semantic equivalents."""
+    q_lower = query.lower().strip()
+    # Check exact match
+    if q_lower in QUERY_EXPANSIONS:
+        return f"{query} {QUERY_EXPANSIONS[q_lower]}"
+    # Check if query is short (1-2 words) and one word is an acronym
+    words = q_lower.split()
+    expanded_parts = [query]
+    for word in words:
+        if word in QUERY_EXPANSIONS:
+            expanded_parts.append(QUERY_EXPANSIONS[word])
+    if len(expanded_parts) > 1:
+        return " ".join(expanded_parts)
+    return query
+
 
 def _json_contains(column, value: str):
-    """SQLite-compatible JSON array contains check."""
     return cast(column, String).like(f'%"{value}"%')
+
+
+def _build_text_filter(q: str):
+    """Build OR filter across all agent text fields for each term in query."""
+    terms = q.lower().split()
+    if not terms:
+        return None
+    term_filters = []
+    for term in terms[:8]:
+        if len(term) < 2:
+            continue
+        term_filters.append(or_(
+            Agent.name.ilike(f"%{term}%"),
+            Agent.description.ilike(f"%{term}%"),
+            Agent.github_username.ilike(f"%{term}%"),
+            cast(Agent.tags, String).ilike(f"%{term}%"),
+            cast(Agent.tech_stack, String).ilike(f"%{term}%"),
+            cast(Agent.languages, String).ilike(f"%{term}%"),
+            cast(Agent.project_domains, String).ilike(f"%{term}%"),
+            cast(Agent.specialties, String).ilike(f"%{term}%"),
+        ))
+    return or_(*term_filters) if term_filters else None
 
 
 def hybrid_search(
@@ -47,64 +104,45 @@ def hybrid_search(
     offset: int = 0,
 ) -> dict:
 
-    # ── Semantic path ───────────────────────────────────────────────────────
+    # ── Semantic path (when embedding index is ready) ────────────────────────
     if q:
         try:
-            from .embeddings import semantic_search, expand_query, is_ready
+            from .embeddings import semantic_search, expand_query as sem_expand, is_ready
             if is_ready():
-                expanded = expand_query(q)
+                expanded = sem_expand(q)
                 semantic_results = semantic_search(expanded, top_k=200)
-                # Build id→score map
-                score_map = {agent_id: score for agent_id, score in semantic_results}
+                score_map = {aid: score for aid, score in semantic_results}
                 candidate_ids = list(score_map.keys())
 
-                # Get max karma for normalization
-                max_karma = db.query(Agent).order_by(Agent.karma.desc()).first()
-                max_k = max(1, max_karma.karma if max_karma else 1)
+                max_karma_agent = db.query(Agent).order_by(Agent.karma.desc()).first()
+                max_k = max(1, max_karma_agent.karma if max_karma_agent else 1)
 
-                # Fetch candidates and apply filters
-                query = db.query(Agent).filter(Agent.id.in_(candidate_ids))
-                query = _apply_filters(query, tag, tech, domain, language, verified,
-                                       active_days, min_karma, has_projects, availability)
+                base = db.query(Agent).filter(Agent.id.in_(candidate_ids))
+                base = _apply_filters(base, tag, tech, domain, language, verified,
+                                      active_days, min_karma, has_projects, availability)
+                candidates = base.all()
+                total = len(candidates)
 
-                all_candidates = query.all()
-                total = len(all_candidates)
+                def rank(a: Agent) -> float:
+                    return score_map.get(a.id, 0.0) * 0.65 + min(1.0, (a.karma or 0) / max_k) * 0.35
 
-                # Hybrid re-ranking: semantic + karma boost
-                def rank_score(a: Agent) -> float:
-                    sem = score_map.get(a.id, 0.0)
-                    karma_norm = min(1.0, (a.karma or 0) / max_k)
-                    return sem * 0.65 + karma_norm * 0.35
-
-                ranked = sorted(all_candidates, key=rank_score, reverse=True)
+                ranked = sorted(candidates, key=rank, reverse=True)
                 page = ranked[offset:offset + limit]
-
                 from .main import _agent_dict
                 return {"total": total, "agents": [_agent_dict(a) for a in page],
                         "offset": offset, "limit": limit, "search_mode": "semantic"}
-
         except Exception as e:
-            logger.warning(f"Semantic search failed, falling back to keyword: {e}")
+            logger.debug(f"Semantic search unavailable: {e}")
 
-    # ── Keyword / filter path ───────────────────────────────────────────────
+    # ── Keyword path with query expansion ───────────────────────────────────
     query = db.query(Agent)
 
     if q:
-        terms = q.lower().split()
-        term_filters = []
-        for term in terms[:6]:
-            term_filters.append(or_(
-                Agent.name.ilike(f"%{term}%"),
-                Agent.description.ilike(f"%{term}%"),
-                Agent.github_username.ilike(f"%{term}%"),
-                cast(Agent.tags, String).ilike(f"%{term}%"),
-                cast(Agent.tech_stack, String).ilike(f"%{term}%"),
-                cast(Agent.languages, String).ilike(f"%{term}%"),
-                cast(Agent.project_domains, String).ilike(f"%{term}%"),
-                cast(Agent.specialties, String).ilike(f"%{term}%"),
-            ))
-        if term_filters:
-            query = query.filter(or_(*term_filters))
+        # Always expand the query before keyword matching
+        expanded_q = expand_query(q)
+        text_filter = _build_text_filter(expanded_q)
+        if text_filter is not None:
+            query = query.filter(text_filter)
 
     query = _apply_filters(query, tag, tech, domain, language, verified,
                            active_days, min_karma, has_projects, availability)
@@ -122,10 +160,9 @@ def hybrid_search(
 
     total = query.count()
     agents = query.offset(offset).limit(limit).all()
-
     from .main import _agent_dict
     return {"total": total, "agents": [_agent_dict(a) for a in agents],
-            "offset": offset, "limit": limit, "search_mode": "keyword"}
+            "offset": offset, "limit": limit, "search_mode": "keyword+expansion"}
 
 
 def _apply_filters(query, tag, tech, domain, language, verified,
